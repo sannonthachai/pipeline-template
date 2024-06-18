@@ -1,0 +1,510 @@
+kind: pipeline
+type: kubernetes
+name: check-builds
+
+node_selector:
+  worker: pipelineNodeGroup
+
+clone:
+  disable: true
+
+steps:
+  - name: drone-cancel-previous-builds
+    image: owncloudci/drone-cancel-previous-builds
+    environment:
+      PLUGIN_DRONE_TOKEN:
+        from_secret: token
+    when:
+      event:
+        - push
+      branch:
+        - '*/dev'
+        - '*/staging'
+        - '*/master'
+
+---
+kind: pipeline
+type: kubernetes
+name: ci-pipeline
+
+node_selector:
+  worker: pipelineNodeGroup
+
+resources:
+  requests:
+    cpu: 1200
+    memory: 2500MiB
+
+clone:
+  disable: true
+
+trigger:
+  event:
+  - push
+  branch:
+  - '*/dev'
+  - '*/staging'
+
+anchors:
+  - &docker-image-setting
+    access_key:
+      from_secret: aws_access_key_id
+    secret_key:
+      from_secret: aws_secret_access_key
+    registry: 248783859424.dkr.ecr.ap-southeast-1.amazonaws.com
+    region: ap-southeast-1
+    force_tag: true
+    tags: '${DRONE_BRANCH##*/}-${DRONE_COMMIT_SHA}'
+
+steps:
+  - name: clone
+    image: drone/git
+
+  - name: build-app-career
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: '${DRONE_BRANCH}'
+      SECRET_ENV: 
+        from_secret: SECRET_ENV
+    commands:
+      - if [[ $DRONE_BRANCH == career/dev ]]; then export SWITCH_DOMAIN=dev; fi
+      - if [[ $DRONE_BRANCH == career/staging ]]; then export SWITCH_DOMAIN=site; fi
+      - export BASE_URL=subdomain.$SWITCH_DOMAIN
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=career
+    when:
+      event:
+        - push
+      branch:
+        - career/dev
+        - career/staging
+
+  - name: build-app-gecb
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: '${DRONE_BRANCH}'
+      VITE_APP_PORT: 8085
+    commands:
+      - if [[ $DRONE_BRANCH == gecb/dev ]]; then export SWITCH_DOMAIN=dev; fi
+      - if [[ $DRONE_BRANCH == gecb/staging ]]; then export SWITCH_DOMAIN=site; fi
+      - export VITE_APP_DOMAIN=subdomain.$SWITCH_DOMAIN
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=gecb
+    when:
+      event:
+        - push
+      branch:
+        - gecb/dev
+        - gecb/staging
+
+  - name: build-app-kids
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: '${DRONE_BRANCH}'
+    commands:
+      - if [[ $DRONE_BRANCH == kids/dev ]]; then export SWITCH_DOMAIN=dev; fi
+      - if [[ $DRONE_BRANCH == kids/staging ]]; then export SWITCH_DOMAIN=site; fi
+      - export BASE_URL=subdomain.$SWITCH_DOMAIN
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=kids
+    when:
+      event:
+        - push
+      branch:
+        - kids/dev
+        - kids/staging
+
+  - name: build-app-landing-page
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: '${DRONE_BRANCH}'
+    commands:
+      - if [[ $DRONE_BRANCH == landing-page/dev ]]; then export SWITCH_DOMAIN=dev; fi
+      - if [[ $DRONE_BRANCH == landing-page/staging ]]; then export SWITCH_DOMAIN=site; fi
+      - export BASE_URL=subdomain.$SWITCH_DOMAIN
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=landing-page
+    when:
+      event:
+        - push
+      branch:
+        - landing-page/dev
+        - landing-page/staging
+
+  - name: build-app-student
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: '${DRONE_BRANCH}'
+    commands:
+      - if [[ $DRONE_BRANCH == student/dev ]]; then export SWITCH_DOMAIN=dev; fi
+      - if [[ $DRONE_BRANCH == student/staging ]]; then export SWITCH_DOMAIN=site; fi
+      - export BASE_URL=subdomain.$SWITCH_DOMAIN
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=student
+    when:
+      event:
+        - push
+      branch:
+        - student/dev
+        - student/staging
+
+  - name: build-app-summary
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: '${DRONE_BRANCH}'
+    commands:
+      - if [[ $DRONE_BRANCH == summary/dev ]]; then export SWITCH_DOMAIN=dev; fi
+      - if [[ $DRONE_BRANCH == summary/staging ]]; then export SWITCH_DOMAIN=site; fi
+      - export BASE_URL=subdomain.$SWITCH_DOMAIN
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=summary
+    when:
+      event:
+        - push
+      branch:
+        - summary/dev
+        - summary/staging
+
+  - name: build-docker-image-career
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: career-v2-2023
+      dockerfile: Dockerfile.career
+    when:
+      event:
+        - push
+      branch:
+        - career/dev
+        - career/staging
+
+  - name: build-docker-image-gecb
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: gecb
+      dockerfile: Dockerfile.gecb
+    when:
+      event:
+        - push
+      branch:
+        - gecb/dev
+        - gecb/staging
+
+  - name: build-docker-image-kids
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: kids-v2-2022
+      dockerfile: Dockerfile.kids
+    when:
+      event:
+        - push
+      branch:
+        - kids/dev
+        - kids/staging
+
+  - name: build-docker-image-landing-page
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: landing-page
+      dockerfile: Dockerfile.landing-page
+    when:
+      event:
+        - push
+      branch:
+        - landing-page/dev
+        - landing-page/staging
+
+  - name: build-docker-image-student
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: student-app
+      dockerfile: Dockerfile.student
+    when:
+      event:
+        - push
+      branch:
+        - student/dev
+        - student/staging
+
+  - name: build-docker-image-summary
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: summary
+      dockerfile: Dockerfile.summary
+    when:
+      event:
+        - push
+      branch:
+        - summary/dev
+        - summary/staging
+
+  - name: push-helm-to-argo-repo
+    image: alpine/git
+    environment:
+      REPOSITORY:
+        from_secret: repository
+    commands:
+    - if [[ $DRONE_BRANCH == */dev ]]; then export HELM_VALUE=./k8s/${DRONE_BRANCH%/*}/helm/values.dev.yaml; fi
+    - if [[ $DRONE_BRANCH == */staging ]]; then export HELM_VALUE=./k8s/${DRONE_BRANCH%/*}/helm/values.staging.yaml; fi
+    - sed -i 's/latest/${DRONE_BRANCH##*/}-${DRONE_COMMIT_SHA}/g' $HELM_VALUE
+    - git clone $${REPOSITORY}
+    - cd monorepo-argo
+    - git checkout $DRONE_BRANCH
+    - rm -rf helm
+    - mv ../k8s/${DRONE_BRANCH%/*}/helm .
+    - git config --global user.email "$DRONE_COMMIT_AUTHOR_EMAIL"
+    - git config --global user.name "$DRONE_COMMIT_AUTHOR_NAME"
+    - git add .
+    - git commit -m "$DRONE_COMMIT_MESSAGE"
+    - git push -u origin $DRONE_BRANCH
+
+  - name: notify-google-chat
+    image: plugins/webhook
+    settings:
+      urls: https://chat.googleapis.com/v1/spaces/AAAAIVGIBMg/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=TIJmWEywkF6uSJkt0FYjtdHAMDlhVfV5f3WsNK1vjbg
+      content_type: application/json; charset=UTF-8
+      debug: true
+      template: |
+        {{#success build.status}}
+        {
+          "text": "{{repo.name}} ({{build.branch}}) <{{ build.link }}|{{ repo.owner }}/{{ repo.name }}#{{truncate build.commit 8}}> build #{{build.number}} succeeded on {{uppercasefirst build.event}}. Good job {{ build.author }}. 👍🏻"
+        }
+        {{else}}
+        {
+          "text": "{{repo.name}} ({{build.branch}}) <{{ build.link }}|{{ repo.owner }}/{{ repo.name }}#{{truncate build.commit 8}}> build #{{build.number}} failed on {{uppercasefirst build.event}}. Fix me please {{ build.author }}. 😢"
+        }
+        {{/success}}
+
+---
+kind: pipeline
+type: kubernetes
+name: ci-pipeline-production
+
+node_selector:
+  worker: pipelineNodeGroup
+
+resources:
+  requests:
+    cpu: 1200
+    memory: 2500MiB
+
+clone:
+  disable: true
+
+trigger:
+  event:
+  - tag
+  
+anchors:
+  - &docker-image-setting
+    access_key:
+      from_secret: aws_access_key_id
+    secret_key:
+      from_secret: aws_secret_access_key
+    registry: 248783859424.dkr.ecr.ap-southeast-1.amazonaws.com
+    region: ap-southeast-1
+    force_tag: true
+    tags:
+        - latest
+        - '${DRONE_TAG%%-*}'
+
+steps:
+  - name: clone
+    image: drone/git
+
+  - name: build-app-career
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: 'career/master'
+      SECRET_ENV: 
+        from_secret: SECRET_ENV
+    commands:
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=career
+    when:
+      ref:
+      - refs/tags/*-career
+
+  - name: build-app-gecb
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: 'gecb/master'
+      VITE_APP_PORT: 8085
+      VITE_APP_DOMAIN: ''
+    commands:
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=gecb
+    when:
+      ref:
+      - refs/tags/*-gecb
+
+  - name: build-app-kids
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: 'kids/master'
+      BASE_URL: ''
+    commands:
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=kids
+    when:
+      ref:
+      - refs/tags/*-kids
+
+  - name: build-app-landing-page
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: 'landing-page/master'
+    commands:
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=landing-page
+    when:
+      ref:
+      - refs/tags/*-landing-page
+
+  - name: build-app-student
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: 'student/master'
+      VITE_APP_DOMAIN: ''
+    commands:
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=student
+    when:
+      ref:
+      - refs/tags/*-student
+
+  - name: build-app-summary
+    image: node:16.15.0-alpine
+    environment:
+      BRANCH: 'summary/master'
+    commands:
+      - yarn
+      - apk add --no-cache libc6-compat
+      - yarn build --scope=summary
+    when:
+      ref:
+      - refs/tags/*-summary
+
+  - name: build-docker-image-career
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: career-v2-2023
+      dockerfile: Dockerfile.career
+    when:
+      ref:
+      - refs/tags/*-career
+
+  - name: build-docker-image-gecb
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: gecb
+      dockerfile: Dockerfile.gecb
+    when:
+      ref:
+      - refs/tags/*-gecb
+
+  - name: build-docker-image-kids
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: kids-v2-2022
+      dockerfile: Dockerfile.kids
+    when:
+      ref:
+      - refs/tags/*-kids
+
+  - name: build-docker-image-landing-page
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: landing-page
+      dockerfile: Dockerfile.landing-page
+    when:
+      ref:
+      - refs/tags/*-landing-page
+
+  - name: build-docker-image-student
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: student-app
+      dockerfile: Dockerfile.student
+    when:
+      ref:
+      - refs/tags/*-student
+
+  - name: build-docker-image-summary
+    image: plugins/kaniko-ecr
+    settings:
+      <<: *docker-image-setting
+      repo: summary
+      dockerfile: Dockerfile.summary
+    when:
+      ref:
+      - refs/tags/*-summary
+
+  - name: push-helm-to-argo-repo
+    image: alpine/git
+    environment:
+      REPOSITORY:
+        from_secret: repository
+    commands:
+    - sed -i 's/latest/${DRONE_TAG%%-*}/g' ./k8s/${DRONE_TAG#*-}/helm/values.yaml
+    - git clone $${REPOSITORY}
+    - cd monorepo-argo
+    - git checkout "${DRONE_TAG#*-}/master"
+    - rm -rf helm
+    - mv ../k8s/${DRONE_TAG#*-}/helm .
+    - git config --global user.email "$DRONE_COMMIT_AUTHOR_EMAIL"
+    - git config --global user.name "$DRONE_COMMIT_AUTHOR_NAME"
+    - git add .
+    - git commit -m "$DRONE_COMMIT_MESSAGE"
+    - git push -u origin "${DRONE_TAG#*-}/master"
+
+  - name: tag-to-argo-repo
+    image: alpine/git
+    environment:
+      REPOSITORY:
+        from_secret: repository
+    commands:
+    - cd monorepo-argo
+    - git checkout "${DRONE_TAG#*-}/master"
+    - git config --global user.email "$DRONE_COMMIT_AUTHOR_EMAIL"
+    - git config --global user.name "$DRONE_COMMIT_AUTHOR_NAME"
+    - git tag -a $DRONE_TAG -m "Create release tag $DRONE_TAG"
+    - git push origin --tags
+
+  - name: notify-google-chat
+    image: plugins/webhook
+    settings:
+      urls: 
+      content_type: application/json; charset=UTF-8
+      debug: true
+      template: |
+        {{#success build.status}}
+        {
+          "text": "{{repo.name}} ({{build.branch}}) <{{ build.link }}|{{ repo.owner }}/{{ repo.name }}#{{truncate build.commit 8}}> build #{{build.number}} succeeded on {{uppercasefirst build.event}}. Good job {{ build.author }}. 👍🏻"
+        }
+        {{else}}
+        {
+          "text": "{{repo.name}} ({{build.branch}}) <{{ build.link }}|{{ repo.owner }}/{{ repo.name }}#{{truncate build.commit 8}}> build #{{build.number}} failed on {{uppercasefirst build.event}}. Fix me please {{ build.author }}. 😢"
+        }
+        {{/success}}

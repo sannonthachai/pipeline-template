@@ -1,0 +1,215 @@
+kind: pipeline
+type: kubernetes
+name: check-builds
+
+node_selector:
+  worker: pipelineNodeGroup
+
+clone:
+  disable: true
+
+steps:
+  - name: drone-cancel-previous-builds
+    image: owncloudci/drone-cancel-previous-builds
+    environment:
+      PLUGIN_DRONE_TOKEN:
+        from_secret: token
+    when:
+      event:
+        - push
+      branch:
+        - dev
+        - staging
+        - master
+        - cronjob
+
+---
+kind: pipeline
+type: kubernetes
+name: ci-pipeline
+
+node_selector:
+  worker: pipelineNodeGroup
+
+resources:
+  requests:
+    cpu: 1200
+    memory: 2500MiB
+
+clone:
+  disable: true
+
+trigger:
+  event:
+  - push
+  branch:
+  - dev
+  - staging
+  - cronjob
+
+steps:
+  - name: clone
+    image: drone/git
+
+  - name: build-app
+    image: node:14-alpine
+    commands:
+      - yarn
+      - yarn build
+
+  - name: test
+    image: node:14-alpine
+    environment:
+      TZ: 'Asia/Bangkok'
+      NODE_OPTIONS: '--max-old-space-size=3072'
+    commands:
+      - yarn test
+    when:
+      branch:
+        - staging
+
+  - name: build-docker-image
+    image: plugins/kaniko-ecr
+    settings:
+      access_key:
+        from_secret: aws_access_key_id
+      secret_key:
+        from_secret: aws_secret_access_key
+      repo: 
+      registry: 248783859424.dkr.ecr.ap-southeast-1.amazonaws.com
+      region: ap-southeast-1
+      force_tag: true
+      tags: '${DRONE_BRANCH}-${DRONE_COMMIT_SHA}'
+      dockerfile: Dockerfile.prod
+
+  - name: push-helm-to-argo-repo
+    image: alpine/git
+    environment:
+      REPOSITORY:
+        from_secret: repository
+    commands:
+    - if [[ $DRONE_BRANCH == dev ]]; then export HELM_VALUE=./k8s/helm/values.dev.yaml; fi
+    - if [[ $DRONE_BRANCH == staging ]]; then export HELM_VALUE=./k8s/helm/values.staging.yaml; fi
+    - if [[ $DRONE_BRANCH == cronjob ]]; then export HELM_VALUE=./k8s/helm/values.cronjob.yaml; fi
+    - sed -i 's/latest/${DRONE_BRANCH}-${DRONE_COMMIT_SHA}/g' $HELM_VALUE
+    - git clone $${REPOSITORY}
+    - cd argo-repository
+    - git checkout "$DRONE_REPO_NAME/$DRONE_BRANCH"
+    - rm -rf helm
+    - mv ../k8s/helm .
+    - git config --global user.email "$DRONE_COMMIT_AUTHOR_EMAIL"
+    - git config --global user.name "$DRONE_COMMIT_AUTHOR_NAME"
+    - git add .
+    - git commit -m "$DRONE_COMMIT_MESSAGE"
+    - git push -u origin "$DRONE_REPO_NAME/$DRONE_BRANCH"
+
+  - name: notify-google-chat
+    image: plugins/webhook
+    settings:
+      urls: 
+      content_type: application/json; charset=UTF-8
+      debug: true
+      template: |
+        {{#success build.status}}
+        {
+          "text": "{{repo.name}} ({{build.branch}}) <{{ build.link }}|{{ repo.owner }}/{{ repo.name }}#{{truncate build.commit 8}}> build #{{build.number}} succeeded on {{uppercasefirst build.event}}. Good job {{ build.author }}. 👍🏻"
+        }
+        {{else}}
+        {
+          "text": "{{repo.name}} ({{build.branch}}) <{{ build.link }}|{{ repo.owner }}/{{ repo.name }}#{{truncate build.commit 8}}> build #{{build.number}} failed on {{uppercasefirst build.event}}. Fix me please {{ build.author }}. 😢"
+        }
+        {{/success}}
+
+---
+kind: pipeline
+type: kubernetes
+name: ci-pipeline-production
+
+node_selector:
+  worker: pipelineNodeGroup
+
+resources:
+  requests:
+    cpu: 1200
+    memory: 2500MiB
+
+clone:
+  disable: true
+
+trigger:
+  event:
+  - tag
+
+steps:
+  - name: clone
+    image: drone/git
+
+  - name: build-app
+    image: node:14-alpine
+    commands:
+      - yarn
+      - yarn build
+
+  - name: build-docker-image
+    image: plugins/kaniko-ecr
+    settings:
+      access_key:
+        from_secret: aws_access_key_id
+      secret_key:
+        from_secret: aws_secret_access_key
+      repo: 
+      registry: 248783859424.dkr.ecr.ap-southeast-1.amazonaws.com
+      region: ap-southeast-1
+      force_tag: true
+      tags:
+        - latest
+        - '${DRONE_TAG}'
+      dockerfile: Dockerfile.prod
+
+  - name: push-helm-to-argo-repo
+    image: alpine/git
+    environment:
+      REPOSITORY:
+        from_secret: repository
+    commands:
+    - sed -i 's/latest/${DRONE_TAG}/g' ./k8s/helm/values.yaml
+    - git clone $${REPOSITORY}
+    - cd argo-repository
+    - git checkout "$DRONE_REPO_NAME/master"
+    - rm -rf helm
+    - mv ../k8s/helm .
+    - git config --global user.email "$DRONE_COMMIT_AUTHOR_EMAIL"
+    - git config --global user.name "$DRONE_COMMIT_AUTHOR_NAME"
+    - git add .
+    - git commit -m "$DRONE_COMMIT_MESSAGE"
+    - git push -u origin "$DRONE_REPO_NAME/master"
+
+  - name: tag-to-argo-repo
+    image: alpine/git
+    environment:
+      REPOSITORY:
+        from_secret: repository
+    commands:
+      - cd argo-repository
+      - git checkout "$DRONE_REPO_NAME/master"
+      - git config --global user.email "$DRONE_COMMIT_AUTHOR_EMAIL"
+      - git config --global user.name "$DRONE_COMMIT_AUTHOR_NAME"
+      - git tag -a $DRONE_TAG-$DRONE_REPO_NAME -m "Create release tag $DRONE_TAG-$DRONE_REPO_NAME"
+      - git push origin --tags
+
+  - name: notify-google-chat
+    image: plugins/webhook
+    settings:
+      urls: https://chat.googleapis.com/v1/spaces/AAAAIVGIBMg/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=TIJmWEywkF6uSJkt0FYjtdHAMDlhVfV5f3WsNK1vjbg
+      content_type: application/json; charset=UTF-8
+      debug: true
+      template: |
+        {{#success build.status}}
+        {
+          "text": "{{repo.name}} ({{build.branch}}) <{{ build.link }}|{{ repo.owner }}/{{ repo.name }}#{{truncate build.commit 8}}> build #{{build.number}} succeeded on {{uppercasefirst build.event}}. Good job {{ build.author }}. 👍🏻"
+        }
+        {{else}}
+        {
+          "text": "{{repo.name}} ({{build.branch}}) <{{ build.link }}|{{ repo.owner }}/{{ repo.name }}#{{truncate build.commit 8}}> build #{{build.number}} failed on {{uppercasefirst build.event}}. Fix me please {{ build.author }}. 😢"
+        }
+        {{/success}}
